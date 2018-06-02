@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 10 21:07:10 2018
+
+@author: chendongcai
+"""
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import math
+import time
+import functools
+import numpy as np
+import random as rd
+import seaborn as sns
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+import string
+import re
+from keras.preprocessing.text import Tokenizer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.cross_validation import train_test_split
+from sklearn import datasets
+from keras.preprocessing.sequence import pad_sequences
+from sklearn.pipeline import FeatureUnion
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.layers import Input, Dropout, Dense, concatenate, GRU, Embedding, Flatten, Activation
+# from keras.layers import Bidirectional
+from keras.optimizers import Adam
+from keras.models import Model
+from keras import backend as K
+from nltk.corpus import stopwords
+import math
+#%%
+data=pd.read_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/cleaned_data.csv')
+price=pd.read_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/price_data.csv',header=None)
+price=price[1]
+#%%
+def wordCount(text):
+    try:
+        if text == 'No description yet':
+            return 0
+        else:
+            text = text.lower()
+            words = [w for w in text.split(" ")]
+            return len(words)
+    except: 
+        return 0
+
+data['des_len']=data.item_description.apply(lambda x:wordCount(x))
+data['name_len']=data.name.apply(lambda x:wordCount(x))
+
+#%%
+reg=r'[0-9]+'
+t=re.compile(reg)
+data.seq_description=data.seq_description.apply(lambda x:re.findall(t,x))
+data.seq_category=data.seq_category.apply(lambda x:re.findall(t,x))
+data.seq_name=data.seq_name.apply(lambda x:re.findall(t,x))
+def str_to_int(stringlist):
+    return [int(i) for i in stringlist]
+data.seq_description=data.seq_description.apply(lambda x:str_to_int(x))
+data.seq_category=data.seq_category.apply(lambda x:str_to_int(x))
+data.seq_name=data.seq_name.apply(lambda x:str_to_int(x))
+
+max_seq_name = 10 #17
+max_seq_description = 75 #269
+max_seq_category = 8 #8
+max_text = np.max([np.max(data.seq_name.max()),np.max(data.seq_description.max()),np.max(data.seq_category.max())]) + 100
+max_category = data.category.max() + 1
+max_brand = data.brand_name.max() + 1
+max_condition = data.item_condition_id.max() + 1
+max_description_len = data.des_len.max() + 1
+max_name_len = data.name_len.max() + 1
+max_subcat0 = data.subcat0.max() + 1
+max_subcat1 = data.subcat1.max() + 1
+max_subcat2 = data.subcat2.max() + 1
+
+def rmsle(Y, Y_pred):
+    assert Y.shape == Y_pred.shape
+    return np.sqrt(np.mean(np.square(Y_pred - Y )))
+
+def get_rnn_data(dataset):
+    X = {
+        'name': pad_sequences(dataset.seq_name, maxlen=max_seq_name),
+        'item_desc': pad_sequences(dataset.seq_description, maxlen=max_seq_description),
+        'brand_name': np.array(dataset.brand_name),
+        'category': np.array(dataset.category),
+#         'category_name': pad_sequences(dataset.seq_category, maxlen=MAX_CATEGORY_SEQ),
+        'item_condition': np.array(dataset.item_condition_id),
+        'num_vars': np.array(dataset[["shipping"]]),
+        'desc_len': np.array(dataset[["des_len"]]),
+        'name_len': np.array(dataset[["name_len"]]),
+        'subcat_0': np.array(dataset.subcat0),
+        'subcat_1': np.array(dataset.subcat1),
+        'subcat_2': np.array(dataset.subcat2),
+    }
+    return X
+
+
+#%%
+n_trains=data.n_train[0]
+n_devs=data.n_dev[0]
+data2=data.drop(['n_train','n_dev','n_test'],axis=1)
+
+train = data2[:n_trains]
+dev = data2[n_trains:n_trains+n_devs]
+test = data2[n_trains+n_devs:]
+
+X_train = get_rnn_data(train)
+Y_train = price[:n_trains].values.reshape(-1, 1)
+
+X_dev = get_rnn_data(dev)
+Y_dev = price[n_trains:].values.reshape(-1, 1)
+
+X_test = get_rnn_data(test)
+
+#%%
+np.random.seed(123)
+
+def new_rnn_model(lr=0.001, decay=0.0):
+    # Inputs
+    name = Input(shape=[X_train["name"].shape[1]], name="name")
+    item_desc = Input(shape=[X_train["item_desc"].shape[1]], name="item_desc")
+    brand_name = Input(shape=[1], name="brand_name")
+#     category = Input(shape=[1], name="category")
+#     category_name = Input(shape=[X_train["category_name"].shape[1]], name="category_name")
+    item_condition = Input(shape=[1], name="item_condition")
+    num_vars = Input(shape=[X_train["num_vars"].shape[1]], name="num_vars")
+    desc_len = Input(shape=[1], name="desc_len")
+    name_len = Input(shape=[1], name="name_len")
+    subcat_0 = Input(shape=[1], name="subcat_0")
+    subcat_1 = Input(shape=[1], name="subcat_1")
+    subcat_2 = Input(shape=[1], name="subcat_2")
+
+    # Embeddings layers (adjust outputs to help model)
+    emb_name = Embedding(max_text, 20)(name)
+    emb_item_desc = Embedding(max_text, 60)(item_desc)
+    emb_brand_name = Embedding(max_brand, 10)(brand_name)
+#     emb_category_name = Embedding(MAX_TEXT, 20)(category_name)
+#     emb_category = Embedding(MAX_CATEGORY, 10)(category)
+    emb_item_condition = Embedding(max_condition, 5)(item_condition)
+    emb_desc_len = Embedding(max_description_len, 5)(desc_len)
+    emb_name_len = Embedding(max_name_len, 5)(name_len)
+    emb_subcat_0 = Embedding(max_subcat0, 10)(subcat_0)
+    emb_subcat_1 = Embedding(max_subcat1, 10)(subcat_1)
+    emb_subcat_2 = Embedding(max_subcat2, 10)(subcat_2)
+    
+
+    # rnn layers (GRUs are faster than LSTMs and speed is important here)
+    rnn_layer1 = GRU(16) (emb_item_desc)
+    rnn_layer2 = GRU(8) (emb_name)
+#     rnn_layer3 = GRU(8) (emb_category_name)
+
+    # main layers
+    main_l = concatenate([
+        Flatten() (emb_brand_name)
+#         , Flatten() (emb_category)
+        , Flatten() (emb_item_condition)
+        , Flatten() (emb_desc_len)
+        , Flatten() (emb_name_len)
+        , Flatten() (emb_subcat_0)
+        , Flatten() (emb_subcat_1)
+        , Flatten() (emb_subcat_2)
+        , rnn_layer1
+        , rnn_layer2
+#         , rnn_layer3
+        , num_vars
+    ])
+    # (incressing the nodes or adding layers does not effect the time quite as much as the rnn layers)
+    main_l = Dropout(0.1)(Dense(512,kernel_initializer='normal',activation='relu') (main_l))
+    main_l = Dropout(0.1)(Dense(256,kernel_initializer='normal',activation='relu') (main_l))
+    main_l = Dropout(0.1)(Dense(128,kernel_initializer='normal',activation='relu') (main_l))
+    main_l = Dropout(0.1)(Dense(64,kernel_initializer='normal',activation='relu') (main_l))
+
+    # the output layer.
+    output = Dense(1, activation="linear") (main_l)
+    
+    model = Model([name, item_desc, brand_name , item_condition, 
+                   num_vars, desc_len, name_len, subcat_0, subcat_1, subcat_2], output)
+
+    optimizer = Adam(lr=lr, decay=decay)
+    # (mean squared error loss function works as well as custom functions)  
+    model.compile(loss = 'mse', optimizer = optimizer)
+
+    return model
+
+model = new_rnn_model()
+model.summary()
+
+#%%
+# Set hyper parameters for the model.
+BATCH_SIZE = 512 * 3
+epochs = 2
+
+# Calculate learning rate decay.
+exp_decay = lambda init, fin, steps: (init/fin)**(1/(steps-1)) - 1
+steps = int(len(X_train['name']) / BATCH_SIZE) * epochs
+lr_init, lr_fin = 0.005, 0.001
+lr_decay = exp_decay(lr_init, lr_fin, steps)
+
+# Create model and fit it with training dataset.
+rnn_model = new_rnn_model(lr=lr_init, decay=lr_decay)
+rnn_model.fit(
+        X_train, Y_train, epochs=epochs, batch_size=BATCH_SIZE,
+        validation_data=(X_dev, Y_dev), verbose=1,
+)
+
+print("Evaluating the model on validation data...")
+Y_dev_preds_rnn = rnn_model.predict(X_dev, batch_size=BATCH_SIZE)
+print(" RMSLE error:", rmsle(Y_dev, Y_dev_preds_rnn))
+rnn_preds = rnn_model.predict(X_test, batch_size=BATCH_SIZE, verbose=1)
+rnn_preds = np.expm1(rnn_preds)
+result=pd.DataFrame({'Prediction':rnn_preds.reshape(rnn_preds.shape[0],)},index=[i for i in range(rnn_preds.shape[0])])
+result.to_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/result.csv')

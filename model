@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jan 25 15:58:07 2018
+
+@author: chendongcai
+"""
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import math
+import time
+import functools
+import numpy as np
+import random as rd
+import seaborn as sns
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+import string
+import re
+from keras.preprocessing.text import Tokenizer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.cross_validation import train_test_split
+from sklearn import datasets
+
+#%%
+data_train=pd.read_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/train.tsv',delimiter='\t')
+data_test=pd.read_csv( '/Files/Projects/Kaggle/Pricing Suggestion Challenge/test.tsv',delimiter='\t')
+#%%
+start=time.time()
+missing_ratio=data_train.isnull().sum()/data_train.shape[0]*100
+missing_ratio=missing_ratio.sort_values(ascending=False)
+missing_ratio=pd.DataFrame({'Ratio':missing_ratio})
+fig=plt.figure(figsize=(8,8))
+sns.barplot(missing_ratio.index,missing_ratio.iloc[:,0])
+plt.xticks(rotation='70',fontsize=12)
+#%%
+missing_col=[]
+for i in range(missing_ratio.shape[0]):
+    if missing_ratio.iloc[i,0]!=0.0:
+        missing_col.append(missing_ratio.index[i])
+for col in missing_col:
+    data_train[col].fillna(value='missing',inplace=True)
+    data_test[col].fillna(value='missing',inplace=True)
+data_train.item_description.replace('No description yet','missing',inplace=True)
+data_test.item_description.replace('No description yet','missing',inplace=True)
+def count(text):
+    try:
+        if text=='No description yet':
+            return 0
+        else:
+            text.lower()
+            words=[i for i in text.split(' ')]
+            return len(words)
+    except:
+        return 0
+data_train['description_len']=data_train.item_description.apply(lambda x:count(x))
+data_train['name_len']=data_train.name.apply(lambda x:count(x))
+data_test['description_len']=data_test.item_description.apply(lambda x:count(x))
+data_test['name_len']=data_test.name.apply(lambda x:count(x))
+def split(category):
+    try:
+        if category=='missing':
+            return ('No label','No label','No label')
+        else:
+            return category.split('/')
+    except:
+        return ('No label','No label','No label')
+data_train['subcat0'],data_train['subcat1'],data_train['subcat2']=zip(*data_train.category_name.apply(lambda x:split(x)))
+data_test['subcat0'],data_test['subcat1'],data_test['subcat2']=zip(*data_test.category_name.apply(lambda x:split(x)))
+#%%
+before_missing=(data_train.brand_name=='missing').sum()
+all_brands=list(data_train.brand_name.unique())
+def find_brand(name_and_brand):
+    name=name_and_brand[0]
+    brand=name_and_brand[1]
+    name_split=name.split(' ')
+    if brand=='missing':
+        if name in all_brands:
+            return name
+        else:
+            for i in name_split:
+                if i in all_brands:
+                    return i
+    return brand
+data_train['brand_name']=data_train[['name','brand_name']].apply(find_brand,axis=1)
+data_test['brand_name']=data_test[['name','brand_name']].apply(find_brand,axis=1)        
+after_missing=(data_train.brand_name=='missing').sum()
+#%%
+data_train['target']=np.log1p(data_train['price'])
+train,dev=train_test_split(data_train,train_size=0.95)
+price_train=train['target']
+price_dev=dev['target']
+price=pd.concat([price_train,price_dev])
+train=train.drop(['train_id','target','price'],axis=1)
+dev=dev.drop(['train_id','target','price'],axis=1)
+data_test=data_test.drop('test_id',axis=1)
+n_train,n_dev,n_test=len(train),len(dev),len(data_test)
+all_data=pd.concat([train,dev,data_test])
+#all_data=pd.concat([data_train,data_test])
+text=np.hstack([all_data.item_description.str.lower(),all_data.name.str.lower(),all_data.category_name.str.lower()])
+token=Tokenizer()
+token.fit_on_texts(text)
+all_data['seq_description']=token.texts_to_sequences(all_data.item_description.str.lower())
+all_data['seq_name']=token.texts_to_sequences(all_data.name.str.lower())
+all_data['seq_category']=token.texts_to_sequences(all_data.category_name.str.lower())
+feature_pool=['category_name','brand_name','subcat0','subcat1','subcat2']
+le=LabelEncoder()
+le.fit(all_data.category_name)
+all_data['category']=le.transform(all_data.category_name)
+le.fit(all_data.brand_name)
+all_data.brand_name=le.transform(all_data.brand_name)
+le.fit(all_data.subcat0)
+all_data.subcat0=le.transform(all_data.subcat0)
+le.fit(all_data.subcat1)
+all_data.subcat1=le.transform(all_data.subcat1)
+le.fit(all_data.subcat2)
+all_data.subcat2=le.transform(all_data.subcat2)
+all_data['n_test']=n_test
+all_data['n_dev']=n_dev
+all_data['n_train']=n_train
+all_data.to_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/cleaned_data.csv')
+price.to_csv('/Files/Projects/Kaggle/Pricing Suggestion Challenge/price_data.csv')
